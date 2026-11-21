@@ -1446,3 +1446,32 @@ test('phone fields are tel inputs and id fields are left to right', async () => 
   rtl.fireEvent.click(rtl.screen.getByRole('button', { name: 'Bulk' }));
   assert.equal(attr('mt-11', 'dir'), 'ltr');
 });
+
+test('pasting an image attaches the picture and leaves the typed message as the caption', async () => {
+  stubGateway();
+  renderTesterAsWriter();
+  await rtl.screen.findByRole('option', { name: /Main/ });
+  const message = byId('mt-2') as HTMLTextAreaElement;
+  rtl.fireEvent.change(message, { target: { value: 'see you' } });
+
+  rtl.fireEvent.paste(message, { clipboardData: { items: [], files: [] } });
+  assert.equal(document.getElementById('mt-2') instanceof HTMLTextAreaElement, true);
+
+  const file = new window.File([new Uint8Array([137, 80, 78, 71])], 'holiday.png', { type: 'image/png' });
+  rtl.fireEvent.paste(message, {
+    clipboardData: {
+      items: [{ kind: 'file', type: 'image/png', getAsFile: () => file }],
+      files: [file],
+    },
+  });
+
+  const caption = (await rtl.screen.findByLabelText(/Caption/)) as HTMLInputElement;
+  assert.equal(caption.value, 'see you');
+  assert.equal(document.getElementById('mt-2'), null);
+  await rtl.waitFor(() => {
+    const img = document.querySelector('.message-preview-bubble img');
+    assert.ok(img instanceof HTMLImageElement, 'the pasted picture is not in the preview');
+    assert.ok(img.src.startsWith('data:image/png'), img.src.slice(0, 30));
+  });
+  assert.equal(rtl.screen.getByText('holiday.png') instanceof HTMLElement, true);
+});

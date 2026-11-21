@@ -17,8 +17,16 @@
 
 .message-tester .tester-panels {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1.15fr) minmax(280px, 0.85fr);
   gap: 1.5rem;
+  align-items: start;
+}
+
+.message-tester .tester-side {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  min-width: 0;
 }
 
 .message-tester .compose-panel,
@@ -593,6 +601,185 @@
   color: var(--error-text);
 }
 
+/* Outgoing WhatsApp bubble. Colours follow the chat page so formatted text, emoji and images read the same way. */
+.message-tester .message-preview {
+  --wa-wallpaper: #efeae2;
+  --wa-bubble: #d9fdd3;
+  --wa-text: #111b21;
+  --wa-meta: #54656f;
+  --wa-link: #026c9e;
+  min-width: 0;
+  background: var(--bg-white);
+  border-radius: 12px;
+  padding: 1.5rem;
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--border);
+}
+
+[data-theme='dark'] .message-tester .message-preview {
+  --wa-wallpaper: #0b141a;
+  --wa-bubble: #005c4b;
+  --wa-text: #e9edef;
+  --wa-meta: #c2d6cf;
+  --wa-link: #9edaf5;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .message-tester .message-preview {
+    --wa-wallpaper: #0b141a;
+    --wa-bubble: #005c4b;
+    --wa-text: #e9edef;
+    --wa-meta: #c2d6cf;
+    --wa-link: #9edaf5;
+  }
+}
+
+.message-tester .message-preview-header h2 {
+  margin-bottom: 0.375rem;
+}
+
+.message-tester .message-preview-hint,
+.message-tester .message-preview-audience,
+.message-tester .message-preview-empty,
+.message-tester .message-preview-fallback {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.message-tester .message-preview-symbols {
+  margin-top: 1rem;
+}
+
+.message-tester .message-preview-symbol-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+}
+
+.message-tester .message-preview-symbol {
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-white);
+  font-size: 1.15rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.message-tester .message-preview-symbol:hover:not(:disabled) {
+  border-color: var(--primary);
+  background: var(--bg-light);
+}
+
+.message-tester .message-preview-symbol:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.message-tester .message-preview-audience {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-top: 1rem;
+}
+
+.message-tester .message-preview-numbers {
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.message-tester .message-preview-stage {
+  margin-top: 1rem;
+  min-height: 180px;
+  padding: 1.25rem 1rem;
+  border-radius: 12px;
+  background-color: var(--wa-wallpaper);
+}
+
+.message-tester .message-preview-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 140px;
+  text-align: center;
+}
+
+.message-tester .message-preview-bubble {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  width: fit-content;
+  max-width: min(100%, 320px);
+  margin-inline-start: auto;
+  padding: 0.375rem 0.5rem 0.25rem;
+  border-radius: 8px 8px 2px 8px;
+  background: var(--wa-bubble);
+  color: var(--wa-text);
+  box-shadow: 0 1px 0.5px rgba(11, 20, 26, 0.13);
+}
+
+.message-tester .message-preview-bubble img,
+.message-tester .message-preview-bubble video {
+  display: block;
+  width: 100%;
+  max-height: 220px;
+  object-fit: cover;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.message-tester .message-preview-bubble audio {
+  width: 240px;
+  max-width: 100%;
+}
+
+.message-tester .message-preview-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  unicode-bidi: plaintext;
+  font-size: 0.9375rem;
+  line-height: 1.35;
+}
+
+.message-tester .message-preview-text a {
+  color: var(--wa-link);
+}
+
+.message-tester .message-preview-text code {
+  font-family: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.85em;
+}
+
+.message-tester .message-preview-file {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 180px;
+  padding: 0.5rem;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.05);
+  font-size: 0.875rem;
+}
+
+.message-tester .message-preview-file span {
+  overflow-wrap: anywhere;
+}
+
+.message-tester .message-preview-time {
+  align-self: flex-end;
+  color: var(--wa-meta);
+  font-size: 0.6875rem;
+  line-height: 1;
+}
+
+.message-tester .message-preview-fallback {
+  padding: 0.75rem 0.25rem;
+}
+
 @media (max-width: 1000px) {
   .message-tester .tester-panels {
     grid-template-columns: 1fr;
@@ -605,7 +792,8 @@
   }
 
   .message-tester .compose-panel,
-  .message-tester .response-panel {
+  .message-tester .response-panel,
+  .message-tester .message-preview {
     padding: 1rem;
   }
 

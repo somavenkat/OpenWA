@@ -1,4 +1,4 @@
-import { Fragment, useState, useEffect, useMemo, useRef, type ChangeEvent } from 'react';
+import { Fragment, useState, useEffect, useMemo, useRef, type ChangeEvent, type ClipboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Send, CheckCircle, XCircle, Loader2, Upload, X, Plus, AlertCircle } from 'lucide-react';
 import {
@@ -29,6 +29,7 @@ import {
 } from '../utils/bulkMedia';
 import { PageHeader } from '../components/PageHeader';
 import { GroupPicker } from '../components/GroupPicker';
+import { MessagePreview, type MessagePreviewMedia } from './MessagePreview';
 import { groupLabel, isGatewayRefusal, planGroupSend } from '../utils/groupSelection';
 import { normalizePhoneDigits } from '../utils/phone';
 import { sendSequentially } from '../utils/sendSequentially';
@@ -126,6 +127,22 @@ const TERMINAL_BATCH_STATUSES: readonly BatchStatus[] = ['completed', 'cancelled
 // A leading 00 is the international exit code (no number starts with 0): dropped before measuring, as the Number
 // Checker drops it.
 const PHONE_DIGITS_MAX = 15;
+
+// A copied picture is a file on the clipboard (and, from the desktop, also the file name as text).
+// Screenshots often have an empty name and a type only on the clipboard item, not on the File.
+function imageOnClipboard(data: DataTransfer | null): File | null {
+  if (!data) return null;
+  for (const item of Array.from(data.items)) {
+    if (item.kind !== 'file' || !item.type.startsWith('image/')) continue;
+    const file = item.getAsFile();
+    if (!file) continue;
+    return file.type ? file : new File([file], file.name || 'image.png', { type: item.type });
+  }
+  for (const file of Array.from(data.files)) {
+    if (file.type.startsWith('image/')) return file;
+  }
+  return null;
+}
 // Whether a recipient field names anything: a digit to look up once the exit code is dropped, or an @ of a chat id as
 // typed, which is how the send reads it. With neither, the number check went out as GET .../contacts/check/, which the
 // gateway routes to the contact read of the id "check".
@@ -307,10 +324,9 @@ export function MessageTester() {
     }
   };
 
-  const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = ''; // allow re-picking the same file after it's removed
-    if (!file) return;
+  // `asType` is the category the bytes belong to. A paste decides it before React applies setMessageType,
+  // so the reader must not read `messageType` from this render.
+  const readChosenFile = (file: File, asType: (typeof messageTypes)[number]) => {
     // Reject before base64-encoding so an oversized pick surfaces a clear error instead of OOMing the tab
     // (the backend 413 cap only applies after the whole body is uploaded).
     if (file.size > MEDIA_UPLOAD_MAX_BYTES) {
@@ -328,11 +344,11 @@ export function MessageTester() {
       // readAsDataURL yields "data:<mime>;base64,<payload>"; the engine expects raw base64, so strip the prefix.
       const base64 = dataUrl.split(',')[1] ?? '';
       if (!base64) return;
-      const mimetype = file.type || fallbackMime[messageType];
-      setMediaFile({ base64, mimetype, filename: file.name });
+      const mimetype = file.type || fallbackMime[asType];
+      setMediaFile({ base64, mimetype, filename: file.name || 'image.png' });
       setMediaUrl('');
-      if (messageType === 'document') setContent(file.name);
-      if (messageType === 'bulk') {
+      if (asType === 'document') setContent(file.name);
+      if (asType === 'bulk') {
         setBulkMediaKind(mediaKindFromMime(mimetype));
         setBulkMediaKindChosen(false);
       }
@@ -342,6 +358,25 @@ export function MessageTester() {
       setResponse({ success: false, timestamp: new Date().toISOString(), error: t('messageTester.fileReadError') });
     };
     reader.readAsDataURL(file);
+  };
+
+  const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // allow re-picking the same file after it's removed
+    if (!file) return;
+    readChosenFile(file, messageType);
+  };
+
+  // A copied picture carries its file name as text and the pixels as a file. A plain paste puts the
+  // name in the message. Take the picture instead, the way WhatsApp does, and leave typed text alone.
+  const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
+    if (isGroupSending) return;
+    const image = imageOnClipboard(event.clipboardData);
+    if (!image) return;
+    event.preventDefault();
+    const asType = messageType === 'bulk' || messageType === 'sticker' ? messageType : 'image';
+    if (asType !== messageType) setMessageType(asType);
+    readChosenFile(image, asType);
   };
 
   const isMediaMessageType = mediaMessageTypes.includes(messageType);
@@ -673,6 +708,63 @@ export function MessageTester() {
       : 0;
 
   const optionalInBulk = messageType === 'bulk' ? ` (${t('common.optional')})` : '';
+  // What the recipient's bubble will show. Bulk uses the attachment kind; without one it is plain text.
+  const previewKind = messageType === 'bulk' ? (bulkAttachment?.kind ?? 'text') : messageType;
+  const previewSrc = mediaFile
+    ? `data:${mediaFile.mimetype};base64,${mediaFile.base64}`
+    : !mediaUrlInvalid && isHttpMediaUrl(mediaUrl)
+      ? mediaUrl.trim()
+      : null;
+  const previewName = mediaFile?.filename ?? null;
+  let previewText = '';
+  let previewMedia: MessagePreviewMedia | null = null;
+  let canInsertSymbols = false;
+  if (previewKind === 'text') {
+    previewText = content;
+    canInsertSymbols = true;
+  } else if (previewKind === 'image' || previewKind === 'sticker') {
+    previewText = previewKind === 'image' ? content : '';
+    previewMedia = { kind: 'image', src: previewSrc, name: previewName };
+    canInsertSymbols = previewKind === 'image';
+  } else if (previewKind === 'video') {
+    previewText = content;
+    previewMedia = { kind: 'video', src: previewSrc, name: previewName };
+    canInsertSymbols = true;
+  } else if (previewKind === 'audio') {
+    previewMedia = { kind: 'audio', src: previewSrc, name: previewName };
+  } else if (previewKind === 'document') {
+    previewText = messageType === 'bulk' ? content : '';
+    previewMedia = {
+      kind: 'document',
+      src: null,
+      name: messageType === 'document' ? content.trim() || previewName : previewName,
+    };
+    canInsertSymbols = messageType === 'bulk';
+  } else if (messageType === 'location') {
+    previewText = [locationDescription, locationAddress, [latitude, longitude].filter(Boolean).join(', ')]
+      .map(part => part.trim())
+      .filter(Boolean)
+      .join('\n');
+  } else if (messageType === 'contact') {
+    previewText = [contactName, contactNumber]
+      .map(part => part.trim())
+      .filter(Boolean)
+      .join('\n');
+  } else if (messageType === 'poll') {
+    previewText = [pollQuestion.trim(), ...pollOptionsFilled.map(option => `• ${option}`)].filter(Boolean).join('\n');
+  } else if (messageType === 'forward') {
+    previewText = [forwardMessageId, forwardFrom, forwardTo]
+      .map(part => part.trim())
+      .filter(Boolean)
+      .join('\n');
+  }
+  // Bulk and group already print their counts next to those fields. Repeating the same sentence here makes
+  // that label ambiguous, so the preview names a single recipient and, for a bulk list, the numbers themselves.
+  const previewAudience =
+    messageType !== 'bulk' && recipientType === 'personal' && recipient.trim()
+      ? t('messageTester.preview.to', { target: recipient.trim() })
+      : null;
+  const previewNumbers = messageType === 'bulk' ? bulkRecipientList.slice(0, 4) : [];
   const mediaSourceFields = (
     <>
       <div className="form-group">
@@ -728,6 +820,7 @@ export function MessageTester() {
           accept={mediaAccept[messageType]}
           onChange={handleFileChange}
         />
+        <span className="hint">{t('messageTester.pasteImage')}</span>
         {messageType === 'bulk' && (
           <span className={bulkMediaTooLarge ? 'hint error' : 'hint'} role="status">
             {bulkMediaTooLarge
@@ -767,7 +860,7 @@ export function MessageTester() {
       )}
 
       <div className="tester-panels">
-        <div className="compose-panel">
+        <div className="compose-panel" onPaste={handlePaste}>
           <h2 className="eyebrow">{t('messageTester.compose')}</h2>
 
           <div className="form-group">
@@ -898,6 +991,7 @@ export function MessageTester() {
                   rows={5}
                 />
                 {tooLongHint(content, MESSAGE_TEXT_MAX_LENGTH)}
+                <span className="hint">{t('messageTester.pasteImage')}</span>
               </div>
             )}
 
@@ -1242,136 +1336,151 @@ export function MessageTester() {
           </div>
         </div>
 
-        <div className="response-panel">
-          <h2 className="eyebrow">{t('messageTester.responseTitle')}</h2>
+        <div className="tester-side">
+          <MessagePreview
+            text={previewText}
+            media={previewMedia}
+            audience={previewAudience}
+            numbers={previewNumbers}
+            symbolsDisabled={isGroupSending}
+            onInsertSymbol={
+              canInsertSymbols
+                ? symbol =>
+                    setContent(current => (!current || /\s$/.test(current) ? current + symbol : `${current} ${symbol}`))
+                : undefined
+            }
+          />
+          <div className="response-panel">
+            <h2 className="eyebrow">{t('messageTester.responseTitle')}</h2>
 
-          {response ? (
-            <>
-              <div className={`response-status ${response.success ? 'success' : 'error'}`}>
-                {response.success ? (
-                  <>
-                    <CheckCircle size={20} />
-                    <span>{t('messageTester.successLabel')}</span>
-                  </>
-                ) : (
-                  <>
-                    <XCircle size={20} />
-                    <span>{t('messageTester.failedLabel')}</span>
-                  </>
-                )}
-                {/* `<code>` earns both halves from index.css with no new rule: a monospace face, and the
+            {response ? (
+              <>
+                <div className={`response-status ${response.success ? 'success' : 'error'}`}>
+                  {response.success ? (
+                    <>
+                      <CheckCircle size={20} />
+                      <span>{t('messageTester.successLabel')}</span>
+                    </>
+                  ) : (
+                    <>
+                      <XCircle size={20} />
+                      <span>{t('messageTester.failedLabel')}</span>
+                    </>
+                  )}
+                  {/* `<code>` earns both halves from index.css with no new rule: a monospace face, and the
                     LTR isolation that stops the bidi algorithm reordering the number against an RTL label
                     (ar/he). The `.mono` class only carries the second — its monospacing lives on compound
                     selectors like `.detail-value.mono`, which a bare span never matches. */}
-                {response.status !== undefined && <code>HTTP {response.status}</code>}
-              </div>
-
-              <div className="response-details">
-                <div className="detail-row">
-                  <span className="detail-label">{t('messageTester.response.timestamp')}</span>
-                  <span className="detail-value">{response.timestamp}</span>
+                  {response.status !== undefined && <code>HTTP {response.status}</code>}
                 </div>
-                {response.messageId && (
+
+                <div className="response-details">
                   <div className="detail-row">
-                    <span className="detail-label">{t('messageTester.response.messageId')}</span>
-                    <span className="detail-value mono">{response.messageId}</span>
+                    <span className="detail-label">{t('messageTester.response.timestamp')}</span>
+                    <span className="detail-value">{response.timestamp}</span>
                   </div>
-                )}
-                {response.batchId && (
-                  <div className="detail-row">
-                    <span className="detail-label">{t('messageTester.response.batchId')}</span>
-                    <span className="detail-value mono">{response.batchId}</span>
-                  </div>
-                )}
-                {response.error && (
-                  <div className="detail-row">
-                    <span className="detail-label">{t('messageTester.response.error')}</span>
-                    <span className="detail-value" style={{ color: 'var(--error-text)' }}>
-                      {response.error}
-                    </span>
-                  </div>
-                )}
-                {response.groups && (
-                  <div className="detail-row">
-                    <span className="detail-label">{t('messageTester.response.groups')}</span>
-                    <span className="detail-value">
-                      {t('messageTester.groupsSentSummary', {
-                        sent: response.groups.sent,
-                        total: response.groups.total,
+                  {response.messageId && (
+                    <div className="detail-row">
+                      <span className="detail-label">{t('messageTester.response.messageId')}</span>
+                      <span className="detail-value mono">{response.messageId}</span>
+                    </div>
+                  )}
+                  {response.batchId && (
+                    <div className="detail-row">
+                      <span className="detail-label">{t('messageTester.response.batchId')}</span>
+                      <span className="detail-value mono">{response.batchId}</span>
+                    </div>
+                  )}
+                  {response.error && (
+                    <div className="detail-row">
+                      <span className="detail-label">{t('messageTester.response.error')}</span>
+                      <span className="detail-value" style={{ color: 'var(--error-text)' }}>
+                        {response.error}
+                      </span>
+                    </div>
+                  )}
+                  {response.groups && (
+                    <div className="detail-row">
+                      <span className="detail-label">{t('messageTester.response.groups')}</span>
+                      <span className="detail-value">
+                        {t('messageTester.groupsSentSummary', {
+                          sent: response.groups.sent,
+                          total: response.groups.total,
+                        })}
+                      </span>
+                    </div>
+                  )}
+                  {response.groups && response.groups.failures.length > 0 && (
+                    <div className="detail-row group-failures">
+                      <span className="detail-label">{t('messageTester.response.error')}</span>
+                      <ul className="detail-value">
+                        {response.groups.failures.map(failure => (
+                          <li key={failure.id}>
+                            <strong>{failure.name}</strong>: {failure.error}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {response.groups && response.groups.notSent > 0 && (
+                    <div className="detail-row">
+                      <span className="detail-label">{t('messageTester.response.notSent')}</span>
+                      <span className="detail-value">
+                        {response.groups.stoppedBy === 'refusal'
+                          ? response.groups.refusedWith === undefined
+                            ? t('messageTester.groupSendStoppedNoAnswer', { count: response.groups.notSent })
+                            : t('messageTester.groupSendStopped', {
+                                count: response.groups.notSent,
+                                status: response.groups.refusedWith,
+                              })
+                          : t('messageTester.groupSendCancelled', { count: response.groups.notSent })}
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {response.batchId && batchStatus && response.batchId === batchStatus.batchId && (
+                  <div className="batch-status">
+                    <div className="batch-status-row">
+                      <span className={`batch-badge ${batchStatus.status}`}>
+                        {t(`messageTester.batch.status.${batchStatus.status}`)}
+                      </span>
+                      {(batchStatus.status === 'pending' || batchStatus.status === 'processing') && (
+                        <button
+                          type="button"
+                          className="batch-cancel-btn"
+                          onClick={handleCancelBatch}
+                          disabled={batchCancelling}
+                        >
+                          {batchCancelling ? t('messageTester.batch.cancelling') : t('messageTester.batch.cancel')}
+                        </button>
+                      )}
+                    </div>
+                    <div className="batch-progress-bar">
+                      <div className="batch-progress-fill" style={{ width: `${batchPercent}%` }} />
+                    </div>
+                    <div className="batch-progress-line">
+                      {t('messageTester.batch.progress', {
+                        sent: batchStatus.progress.sent,
+                        failed: batchStatus.progress.failed,
+                        pending: batchStatus.progress.pending,
+                        total: batchStatus.progress.total,
                       })}
-                    </span>
+                    </div>
+                    {batchError && <div className="batch-error">{batchError}</div>}
                   </div>
                 )}
-                {response.groups && response.groups.failures.length > 0 && (
-                  <div className="detail-row group-failures">
-                    <span className="detail-label">{t('messageTester.response.error')}</span>
-                    <ul className="detail-value">
-                      {response.groups.failures.map(failure => (
-                        <li key={failure.id}>
-                          <strong>{failure.name}</strong>: {failure.error}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {response.groups && response.groups.notSent > 0 && (
-                  <div className="detail-row">
-                    <span className="detail-label">{t('messageTester.response.notSent')}</span>
-                    <span className="detail-value">
-                      {response.groups.stoppedBy === 'refusal'
-                        ? response.groups.refusedWith === undefined
-                          ? t('messageTester.groupSendStoppedNoAnswer', { count: response.groups.notSent })
-                          : t('messageTester.groupSendStopped', {
-                              count: response.groups.notSent,
-                              status: response.groups.refusedWith,
-                            })
-                        : t('messageTester.groupSendCancelled', { count: response.groups.notSent })}
-                    </span>
-                  </div>
-                )}
-              </div>
 
-              {response.batchId && batchStatus && response.batchId === batchStatus.batchId && (
-                <div className="batch-status">
-                  <div className="batch-status-row">
-                    <span className={`batch-badge ${batchStatus.status}`}>
-                      {t(`messageTester.batch.status.${batchStatus.status}`)}
-                    </span>
-                    {(batchStatus.status === 'pending' || batchStatus.status === 'processing') && (
-                      <button
-                        type="button"
-                        className="batch-cancel-btn"
-                        onClick={handleCancelBatch}
-                        disabled={batchCancelling}
-                      >
-                        {batchCancelling ? t('messageTester.batch.cancelling') : t('messageTester.batch.cancel')}
-                      </button>
-                    )}
-                  </div>
-                  <div className="batch-progress-bar">
-                    <div className="batch-progress-fill" style={{ width: `${batchPercent}%` }} />
-                  </div>
-                  <div className="batch-progress-line">
-                    {t('messageTester.batch.progress', {
-                      sent: batchStatus.progress.sent,
-                      failed: batchStatus.progress.failed,
-                      pending: batchStatus.progress.pending,
-                      total: batchStatus.progress.total,
-                    })}
-                  </div>
-                  {batchError && <div className="batch-error">{batchError}</div>}
+                <div className="response-json">
+                  <pre>{JSON.stringify(response, null, 2)}</pre>
                 </div>
-              )}
-
-              <div className="response-json">
-                <pre>{JSON.stringify(response, null, 2)}</pre>
+              </>
+            ) : (
+              <div className="response-empty">
+                <p>{t('messageTester.responseEmpty')}</p>
               </div>
-            </>
-          ) : (
-            <div className="response-empty">
-              <p>{t('messageTester.responseEmpty')}</p>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </div>
     </div>
